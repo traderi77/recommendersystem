@@ -215,3 +215,62 @@ class OttoRecommender:
 # recommender = OttoRecommender()
 # recommender.create_covisitation_matrices(train_df)  # Train the model
 # predictions = recommender.generate_recommendations(test_df)  # Generate predictions
+
+
+
+def calculate_recall(predictions: List[int], ground_truth: List[int], k: int = 20) -> float:
+    """
+    Calculate Recall@K for a single session's orders
+    
+    Args:
+        predictions: List of predicted aids (up to 20)
+        ground_truth: List of actual future order aids
+        k: Number of predictions to consider (default 20)
+    
+    Returns:
+        recall: Recall@K value
+    """
+    predictions = predictions[:k]
+    n_correct = len(set(predictions) & set(ground_truth))
+    n_target = min(k, len(ground_truth))
+    recall = n_correct / n_target if n_target > 0 else 0
+    return recall
+
+def evaluate_order_predictions(test_df: pd.DataFrame, pred_df: pd.DataFrame, 
+                             test_labels: Dict[str, List[int]]) -> float:
+    """
+    Evaluate order predictions only
+    
+    Args:
+        test_df: DataFrame with test sessions
+        pred_df: DataFrame with predictions (session_type, labels columns)
+        test_labels: Dict with session -> List[aid] mapping for order ground truth
+    
+    Returns:
+        order_score: Average recall score for orders
+    """
+    # Get only order predictions
+    order_preds = pred_df[pred_df['session_type'].str.endswith('orders')]
+    
+    recalls = []
+    for _, row in order_preds.iterrows():
+        session = row['session_type'].split('_')[0]
+        preds = [int(x) for x in row['labels'].split()]
+        
+        # Get ground truth orders
+        truth = test_labels.get(session, [])
+        
+        # Calculate recall if there are any actual orders
+        if truth:
+            recall = calculate_recall(preds, truth)
+            recalls.append(recall)
+    
+    # Calculate average recall
+    order_score = np.mean(recalls) if recalls else 0.0
+    
+    print("\nOrder Prediction Performance:")
+    print(f"Number of sessions evaluated: {len(recalls)}")
+    print(f"Average Order Recall@20: {order_score:.4f}")
+    
+    return order_score
+
