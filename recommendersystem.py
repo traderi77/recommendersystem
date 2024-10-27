@@ -140,20 +140,22 @@ class OttoRecommender:
         
         # Fill remaining with popular items
         return result + list(self.top_clicks)[:20 - len(result)]
+    
+    
     def suggest_clicks(self, df):
         """Suggests next clicks for a user session"""
         if df.empty:
             return list(self.top_clicks)[:20]  # Return popular items if no history
             
-        # Get user history
-        aids = df['aid'].fillna(-1).astype(int).tolist()
+        # Get user history (keeping as strings)
+        aids = df['aid'].astype(str).tolist()
         types = df['type'].fillna(-1).astype(int).tolist()
         
         # Get unique aids (most recent first)
         unique_aids = []
         seen = set()
         for aid in reversed(aids):
-            if aid not in seen and aid != -1:
+            if aid not in seen:
                 seen.add(aid)
                 unique_aids.append(aid)
         
@@ -162,8 +164,7 @@ class OttoRecommender:
             weights = np.logspace(0.1, 1, len(aids), base=2, endpoint=True) - 1
             aids_temp = Counter()
             for aid, w, t in zip(aids, weights, types):
-                if aid != -1 and t != -1:
-                    aids_temp[aid] += w * self.type_weight_multipliers.get(t, 1)
+                aids_temp[aid] += w * self.type_weight_multipliers.get(t, 1)
             return [k for k, v in aids_temp.most_common(20)]
         
         # Otherwise use covisitation matrices
@@ -188,15 +189,15 @@ class OttoRecommender:
         if df.empty:
             return list(self.top_orders)[:20]  # Return popular items if no history
             
-        # Get user history
-        aids = df['aid'].fillna(-1).astype(int).tolist()
+        # Get user history (keeping as strings)
+        aids = df['aid'].astype(str).tolist()
         types = df['type'].fillna(-1).astype(int).tolist()
         
         # Get unique aids (most recent first)
         unique_aids = []
         seen = set()
         for aid in reversed(aids):
-            if aid not in seen and aid != -1:
+            if aid not in seen:
                 seen.add(aid)
                 unique_aids.append(aid)
         
@@ -204,8 +205,8 @@ class OttoRecommender:
         df_buys = df[df['type'].isin([1, 2])].copy()
         unique_buys = []
         seen = set()
-        for aid in reversed(df_buys['aid'].fillna(-1).astype(int).tolist()):
-            if aid not in seen and aid != -1:
+        for aid in reversed(df_buys['aid'].astype(str).tolist()):
+            if aid not in seen:
                 seen.add(aid)
                 unique_buys.append(aid)
         
@@ -216,8 +217,7 @@ class OttoRecommender:
             
             # Weight by type and frequency
             for aid, w, t in zip(aids, weights, types):
-                if aid != -1 and t != -1:
-                    aids_temp[aid] += w * self.type_weight_multipliers.get(t, 1)
+                aids_temp[aid] += w * self.type_weight_multipliers.get(t, 1)
             
             # Add buy2buy recommendations
             for aid in unique_buys:
@@ -262,7 +262,7 @@ class OttoRecommender:
         # Ensure proper types
         test_df = test_df.copy()
         test_df['session'] = test_df['session'].astype(str)
-        test_df['aid'] = test_df['aid'].fillna(-1).astype(int)
+        test_df['aid'] = test_df['aid'].astype(str)
         test_df['type'] = test_df['type'].fillna(-1).astype(int)
         
         # Generate predictions for clicks and buys
@@ -290,66 +290,3 @@ class OttoRecommender:
         pred_df['labels'] = pred_df['labels'].apply(lambda x: ' '.join(map(str, x)) if isinstance(x, list) else '')
         
         return pred_df
-    # Example usage:
-    # recommender = OttoRecommender()
-    # recommender.create_covisitation_matrices(train_df)  # Train the model
-    # predictions = recommender.generate_recommendations(test_df)  # Generate predictions
-
-
-
-def calculate_recall(predictions: List[int], ground_truth: List[int], k: int = 20) -> float:
-    """
-    Calculate Recall@K for a single session's orders
-    
-    Args:
-        predictions: List of predicted aids (up to 20)
-        ground_truth: List of actual future order aids
-        k: Number of predictions to consider (default 20)
-    
-    Returns:
-        recall: Recall@K value
-    """
-    predictions = predictions[:k]
-    n_correct = len(set(predictions) & set(ground_truth))
-    n_target = min(k, len(ground_truth))
-    recall = n_correct / n_target if n_target > 0 else 0
-    return recall
-
-def evaluate_order_predictions(test_df: pd.DataFrame, pred_df: pd.DataFrame, 
-                             test_labels: Dict[str, List[int]]) -> float:
-    """
-    Evaluate order predictions only
-    
-    Args:
-        test_df: DataFrame with test sessions
-        pred_df: DataFrame with predictions (session_type, labels columns)
-        test_labels: Dict with session -> List[aid] mapping for order ground truth
-    
-    Returns:
-        order_score: Average recall score for orders
-    """
-    # Get only order predictions
-    order_preds = pred_df[pred_df['session_type'].str.endswith('orders')]
-    
-    recalls = []
-    for _, row in order_preds.iterrows():
-        session = row['session_type'].split('_')[0]
-        preds = [int(x) for x in row['labels'].split()]
-        
-        # Get ground truth orders
-        truth = test_labels.get(session, [])
-        
-        # Calculate recall if there are any actual orders
-        if truth:
-            recall = calculate_recall(preds, truth)
-            recalls.append(recall)
-    
-    # Calculate average recall
-    order_score = np.mean(recalls) if recalls else 0.0
-    
-    print("\nOrder Prediction Performance:")
-    print(f"Number of sessions evaluated: {len(recalls)}")
-    print(f"Average Order Recall@20: {order_score:.4f}")
-    
-    return order_score
-
