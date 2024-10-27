@@ -81,8 +81,9 @@ class OttoRecommender:
     
     def _create_time_weighted_matrix(self, df, n_items=20):
         """Creates time-weighted covisitation matrix for click recommendations"""
-        START_TIME = 1659304800
-        END_TIME = 1662328791
+        # Get time range from data
+        START_TIME = df['ts'].min()
+        END_TIME = df['ts'].max()
         
         # Sort by session and timestamp
         df = df.sort_values(['session', 'ts'], ascending=[True, False])
