@@ -1,0 +1,126 @@
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.layers import Embedding, Input, Dot
+from tensorflow.keras.models import Model
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.callbacks import EarlyStopping
+
+# Assume 'df' is the DataFrame with 'user_id', 'item_id', and 'buy' columns
+
+# Step 1: Encode 'user_id' and 'item_id' to contiguous indices
+user_ids = df['user_id'].unique()
+item_ids = df['item_id'].unique()
+
+user_map = {user: idx for idx, user in enumerate(user_ids)}
+item_map = {item: idx for idx, item in enumerate(item_ids)}
+
+df['user_idx'] = df['user_id'].map(user_map)
+df['item_idx'] = df['item_id'].map(item_map)
+
+n_users = len(user_map)
+n_items = len(item_map)
+
+# Step 2: Create positive interactions list
+positive_interactions = df[df['buy'] == 1][['user_idx', 'item_idx']].values
+
+# Step 3: For each user, get items they have interacted with
+user_interacted_items = df.groupby('user_idx')['item_idx'].apply(list).to_dict()
+
+# Step 4: Generate triplets (user, positive_item, negative_item)
+triplets = []
+all_items = set(range(n_items))
+for user, pos_item in positive_interactions:
+    # Sample a negative item not interacted with by the user
+    negative_items = all_items - set(user_interacted_items.get(user, []))
+    if not negative_items:
+        continue  # Skip if no negative items available
+    neg_item = np.random.choice(list(negative_items))
+    triplets.append((user, pos_item, neg_item))
+
+triplets = np.array(triplets)
+
+# Step 5: Create TensorFlow Dataset and batch
+batch_size = 256
+dataset = tf.data.Dataset.from_tensor_slices(triplets)
+dataset = dataset.shuffle(buffer_size=len(triplets)).batch(batch_size)
+
+# Step 6: Define model parameters
+embedding_size = 20  # Define embedding size
+reg_coeff = 0.1  # Define regularization coefficient
+learning_rate = 0.001  # Define learning rate
+weight_decay = 0.005  # Define weight decay
+
+# Step 7: Define BPR model
+user_input = Input(shape=(1,), name='user_input')
+pos_item_input = Input(shape=(1,), name='pos_item_input')
+neg_item_input = Input(shape=(1,), name='neg_item_input')
+
+user_embedding = Embedding(n_users, embedding_size, embeddings_regularizer=l2(reg_coeff), name='user_embedding')
+item_embedding = Embedding(n_items, embedding_size, embeddings_regularizer=l2(reg_coeff), name='item_embedding')
+
+user_emb = user_embedding(user_input)
+pos_item_emb = item_embedding(pos_item_input)
+neg_item_emb = item_embedding(neg_item_input)
+
+user_emb = tf.squeeze(user_emb, axis=1)
+pos_item_emb = tf.squeeze(pos_item_emb, axis=1)
+neg_item_emb = tf.squeeze(neg_item_emb, axis=1)
+
+score_pos = Dot(axes=1)([user_emb, pos_item_emb])
+score_neg = Dot(axes=1)([user_emb, neg_item_emb])
+score_diff = score_pos - score_neg
+
+model = Model(inputs=[user_input, pos_item_input, neg_item_input], outputs=score_diff)
+
+# Step 8: Define BPR loss
+def bpr_loss(y_true, y_pred):
+    return -tf.reduce_mean(tf.math.log(tf.nn.sigmoid(y_pred)))
+
+# Step 9: Compile the model with AdamW optimizer
+optimizer = Adam(learning_rate=learning_rate)
+model.compile(optimizer=optimizer, loss=bpr_loss)
+
+# Step 10: Train the model with early stopping
+early_stopping = EarlyStopping(monitor='loss', patience=3, restore_best_weights=True)
+history = model.fit(dataset, epochs=20, callbacks=[early_stopping])
+
+# Step 11: Extract user and item embeddings
+user_embeddings = model.get_layer('user_embedding').get_weights()[0]
+item_embeddings = model.get_layer('item_embedding').get_weights()[0]
+
+# Step 12: Create DataFrames for embeddings
+user_emb_df = pd.DataFrame(user_embeddings)
+user_emb_df['user_id'] = user_ids  # Map back to original user_ids
+
+item_emb_df = pd.DataFrame(item_embeddings)
+item_emb_df['item_id'] = item_ids  # Map back to original item_ids
+
+# Step 13: Generate top 20 recommendations for each user
+def get_top_recommendations(user_idx, user_embeddings, item_embeddings, user_interacted_items, top_k=20):
+    user_vec = user_embeddings[user_idx]
+    item_scores = np.dot(user_vec, item_embeddings.T)
+    # Exclude items already interacted with
+    interacted_items = user_interacted_items.get(user_idx, [])
+    candidate_scores = [score if idx not in interacted_items else -np.inf for idx, score in enumerate(item_scores)]
+    top_items = np.argsort(candidate_scores)[::-1][:top_k]
+    return top_items
+
+# Generate recommendations for all users
+recommendations = {}
+for user_idx in range(n_users):
+    top_items = get_top_recommendations(user_idx, user_embeddings, item_embeddings, user_interacted_items, top_k=20)
+    recommendations[user_map[user_idx]] = top_items  # Map back to original user_id
+
+# Step 14: Create DataFrame for recommendations
+rec_df = pd.DataFrame.from_dict(recommendations, orient='index').reset_index()
+rec_df.columns = ['user_id'] + [f'item_{i}' for i in range(1, 21)]
+
+# Output the DataFrames
+print("User Embeddings:")
+print(user_emb_df)
+print("\nItem Embeddings:")
+print(item_emb_df)
+print("\nRecommendations:")
+print(rec_df)
