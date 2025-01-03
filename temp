@@ -1,0 +1,8 @@
+item_popularity = np.array(df.groupby('item_id').size()).flatten()
+item_popularity = item_popularity / item_popularity.sum()
+
+def sample_negative(user_interacted_items):
+    negative_items = np.random.choice(n_items, size=1, p=item_popularity)
+    while negative_items[0] in user_interacted_items:
+        negative_items = np.random.choice(n_items, size=1, p=item_popularity)
+    return negative_items[0]
