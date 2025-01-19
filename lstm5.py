@@ -8,7 +8,11 @@ from typing import List, Tuple
 
 class SequenceDataset(Dataset):
     def __init__(self, df: pd.DataFrame, sequence_length: int = 10, prediction_window: int = 30):
-        self.df = df.sort_values('date')
+        self.df = df.copy()
+        # Ensure date is datetime
+        self.df['date'] = pd.to_datetime(self.df['date'])
+        self.df = self.df.sort_values('date')
+        
         self.sequence_length = sequence_length
         self.prediction_window = prediction_window
         
@@ -32,21 +36,29 @@ class SequenceDataset(Dataset):
             for i in range(len(client_data) - self.sequence_length):
                 # Get sequence window
                 sequence = client_data.iloc[i:i + self.sequence_length]
+                sequence_end_date = sequence.iloc[-1]['date']
                 
-                # Get target window
-                target_window = client_data.iloc[i + self.sequence_length:i + self.sequence_length + self.prediction_window]
+                # Get target window (next 30 days)
+                target_window = client_data[
+                    (client_data['date'] > sequence_end_date) & 
+                    (client_data['date'] <= sequence_end_date + pd.Timedelta(days=self.prediction_window))
+                ]
                 
                 # Check if there's a BUY action for the last WKN in sequence
                 last_wkn = sequence.iloc[-1]['wkn']
                 target = int(any((target_window['action'] == 'BUY') & 
                                (target_window['wkn'] == last_wkn)))
                 
+                # Calculate time differences in days
+                sequence_times = (sequence['date'] - sequence.iloc[0]['date']).dt.total_seconds() / (24*3600)
+                time_tensor = torch.tensor(sequence_times.values, dtype=torch.float)
+                
                 # Create sequence tensors
                 client_tensor = torch.tensor(sequence['client_id_encoded'].values[0], dtype=torch.long)
                 action_tensor = torch.tensor(sequence['action_encoded'].values, dtype=torch.long)
                 wkn_tensor = torch.tensor(sequence['wkn_encoded'].values, dtype=torch.long)
                 
-                sequences.append((client_tensor, action_tensor, wkn_tensor, target))
+                sequences.append((client_tensor, action_tensor, wkn_tensor, time_tensor, target))
         
         return sequences
 
@@ -71,9 +83,12 @@ class ClientAwareSequenceModel(nn.Module):
         self.action_embedding = nn.Embedding(num_actions, embedding_dim)
         self.wkn_embedding = nn.Embedding(num_wkns, embedding_dim)
         
+        # Time encoding layer
+        self.time_encoding = nn.Linear(1, embedding_dim)
+        
         # LSTM layer
         self.lstm = nn.LSTM(
-            input_size=embedding_dim * 3,  # Combined embeddings
+            input_size=embedding_dim * 4,  # Combined embeddings + time
             hidden_size=hidden_dim,
             batch_first=True
         )
@@ -84,14 +99,15 @@ class ClientAwareSequenceModel(nn.Module):
         self.fc2 = nn.Linear(hidden_dim // 2, 1)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, client, actions, wkns):
+    def forward(self, client, actions, wkns, times):
         # Get embeddings
         client_emb = self.client_embedding(client).unsqueeze(1).repeat(1, actions.size(1), 1)
         action_emb = self.action_embedding(actions)
         wkn_emb = self.wkn_embedding(wkns)
+        time_emb = self.time_encoding(times.unsqueeze(-1))
         
         # Combine embeddings
-        combined = torch.cat([client_emb, action_emb, wkn_emb], dim=2)
+        combined = torch.cat([client_emb, action_emb, wkn_emb, time_emb], dim=2)
         
         # Pass through LSTM
         lstm_out, _ = self.lstm(combined)
@@ -116,15 +132,16 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
-        for client, actions, wkns, targets in train_loader:
+        for client, actions, wkns, times, targets in train_loader:
             # Move to device
             client = client.to(device)
             actions = actions.to(device)
             wkns = wkns.to(device)
+            times = times.to(device)
             targets = targets.float().to(device)
             
             # Forward pass
-            outputs = model(client, actions, wkns)
+            outputs = model(client, actions, wkns, times)
             loss = criterion(outputs, targets)
             
             # Backward pass
@@ -141,13 +158,14 @@ def train_model(model, train_loader, val_loader, num_epochs=10, learning_rate=0.
         total = 0
         
         with torch.no_grad():
-            for client, actions, wkns, targets in val_loader:
+            for client, actions, wkns, times, targets in val_loader:
                 client = client.to(device)
                 actions = actions.to(device)
                 wkns = wkns.to(device)
+                times = times.to(device)
                 targets = targets.float().to(device)
                 
-                outputs = model(client, actions, wkns)
+                outputs = model(client, actions, wkns, times)
                 val_loss += criterion(outputs, targets).item()
                 
                 predicted = (outputs > 0.5).float()
